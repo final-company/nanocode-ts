@@ -1142,7 +1142,7 @@ export function create<E extends Env>(options: create.Options<E>): create.Return
                     : {}),
                   limits: { maxMemoryBytes: workspaceMemoryBytes, ...options.workspace?.limits },
                 })
-          const local = options.codeMode !== false && !enabled && !this.handsMode(scope, descriptor)
+          const local = options.codeMode !== false && !enabled
           try {
             const created = await this.instance(scope, true)
             await created.open(
