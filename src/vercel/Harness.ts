@@ -181,8 +181,7 @@ export function create(options: create.Options = {}): Harness {
     const cellFetch = GitHub.wrap(Egress.guard(configuredFetch), {
       token: githubToken ? () => githubToken(ctx.runId) : undefined,
     })
-    const files =
-      options.workspace === false || executor ? undefined : SqlFileSystem.create(journal, { scope })
+    const files = options.workspace === false ? undefined : SqlFileSystem.create(journal, { scope })
     const shell =
       !files || options.workspace === false
         ? undefined
@@ -222,7 +221,7 @@ export function create(options: create.Options = {}): Harness {
             gateway: plan ? undefined : gateway,
             event_coalesce_ms: options.eventCoalesceMs ?? defaultEventCoalesceMs,
             stream_tool_input: options.streamToolInput,
-            code_mode: executor ? false : options.codeMode,
+            code_mode: options.codeMode,
             ...(executor ? { hands: true } : {}),
             tools: definitions,
             ...(options.webSearch === false ? { web_search: false } : {}),
