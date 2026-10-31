@@ -67,6 +67,7 @@ export type AgentConfiguration = {
   gateway?: 'vercel' | 'workers_ai'
   cloudflare_account_id?: string
   max_tokens?: number
+  max_resident_subagents?: number
   service_tier?: ServiceTier
   subagents?: boolean
   providers?: Partial<Record<ModelProvider, ProviderEndpoint>>
@@ -125,7 +126,10 @@ export type ToolCallContext = {
   model: string
   instruction_revision: number | null
   origin: string | null
+  subagent: Subagent | null
 }
+
+export type Subagent = { id: number; parent: number | null; tree: number }
 
 export type SubagentStatus =
   | { state: 'pending' | 'running' | 'interrupted' | 'closing' | 'closed' }
@@ -145,6 +149,24 @@ export type SubagentSummary = {
   completion_revision?: number
   usage?: Record<string, unknown>
 }
+
+export type SubagentEntry = SubagentSummary & {
+  can_manage: boolean
+  can_message: boolean
+  resuming?: boolean
+}
+
+export type SubagentPriority = 'deferred' | 'urgent'
+
+export type SubagentReceipt = {
+  disposition: 'queued' | 'started' | 'steered'
+  from: { kind: 'user' }
+  message_id: number
+  thread_id: number
+  to_agent_id: number
+}
+
+export type SubagentAnswer = { text: string; usage: Record<string, unknown> | null }
 
 export type TurnReport = Record<string, unknown> & { request_id: string; status: string }
 
@@ -359,6 +381,7 @@ export type RuntimeOptions = {
       headers: [string, string][]
       body: Uint8Array
       origin: string | null
+      subagent: Subagent | null
     },
     signal: AbortSignal,
     timing: RuntimeTiming,
@@ -366,11 +389,16 @@ export type RuntimeOptions = {
   finishing?(request_id: string): Record<string, unknown> | Promise<Record<string, unknown>>
   socket?: {
     open(
-      request: { provider: ModelProvider; headers: [string, string][]; origin: string | null },
+      request: {
+        provider: ModelProvider
+        headers: [string, string][]
+        origin: string | null
+        subagent: Subagent | null
+      },
       signal: AbortSignal,
       timing: RuntimeTiming,
     ): Promise<SocketHandshake>
-    admit(origin: string | null): Promise<void>
+    admit(origin: string | null, subagent: Subagent | null): Promise<void>
   }
   tools?: {
     call(
@@ -381,7 +409,7 @@ export type RuntimeOptions = {
     ): Promise<unknown>
   }
   workspace?: WorkspaceHost
-  fetch?(input: string, init: RequestInit): Promise<Response>
+  fetch?(input: string, init: RequestInit, subagent: Subagent | null): Promise<Response>
   mcp?: { cacheMs?: number; store?: McpStore }
   remote?: {
     failed?(): boolean
