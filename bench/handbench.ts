@@ -309,7 +309,7 @@ export class Session {
         subscription: false,
         event_coalesce_ms: 100,
         live_deltas: true,
-        code_mode: !!local,
+        ...(local ? { code_mode: true } : {}),
         ...(local ? { workspace: shell.cwd } : { hands: !!this.attached }),
         tools: [
           {
