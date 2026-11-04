@@ -407,6 +407,7 @@ export type RuntimeOptions = {
       signal: AbortSignal,
       context: ToolCallContext,
     ): Promise<unknown>
+    recover?(name: string, signal: AbortSignal, context: ToolCallContext): Promise<unknown>
   }
   workspace?: WorkspaceHost
   fetch?(input: string, init: RequestInit, subagent: Subagent | null): Promise<Response>

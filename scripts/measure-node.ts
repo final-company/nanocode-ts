@@ -36,6 +36,24 @@ mkdirSync('output', { recursive: true })
 let calls = 0
 const requests = []
 const toolCalls = []
+const recoveries = []
+const INTERRUPTED = 'the lookup was interrupted'
+
+function answer(provider, result) {
+  const text = JSON.stringify(result)
+  if (text.includes('bravo')) return 'the value is bravo'
+  if (text.includes('interrupted')) return INTERRUPTED
+  throw new Error(`the ${provider} tool result lost the host tool's output`)
+}
+
+const lookup = {
+  call: async (provider, name, input, context) => {
+    toolCalls.push({ provider, name, input, context })
+    if (name !== LOOKUP.name || input?.key !== 'alpha')
+      throw new Error(`unexpected tool call ${name}`)
+    return { key: 'alpha', value: 'bravo' }
+  },
+}
 
 function claude(input) {
   const call = calls++
@@ -43,13 +61,11 @@ function claude(input) {
     ? input.messages.at(-1).content.find((block) => block.type === 'tool_result')
     : undefined
   const answered = result !== undefined
-  if (answered && !JSON.stringify(result.content).includes('bravo'))
-    throw new Error("the Claude tool result lost the host tool's output")
   const blocks = answered
     ? [
         [
           { type: 'text', text: '' },
-          { type: 'text_delta', text: 'the value is bravo' },
+          { type: 'text_delta', text: answer('Claude', result.content) },
         ],
       ]
     : [
@@ -97,8 +113,6 @@ function codex(input) {
   const user = items.findLastIndex((item) => item.type === 'message' && item.role === 'user')
   const result = items.find((item, index) => index > user && item.type === 'function_call_output')
   const answered = result !== undefined
-  if (answered && !JSON.stringify(result.output).includes('bravo'))
-    throw new Error("the Codex tool result lost the host tool's output")
   const call = calls++
   const id = `resp_${call}`
   const item = answered
@@ -107,7 +121,7 @@ function codex(input) {
         id: `msg_${call}`,
         role: 'assistant',
         status: 'completed',
-        content: [{ type: 'output_text', text: 'the value is bravo' }],
+        content: [{ type: 'output_text', text: answer('Codex', result.output) }],
       }
     : {
         type: 'function_call',
@@ -182,7 +196,7 @@ function database(path) {
   return { db, counts, sql }
 }
 
-async function open(provider, path, sessionId) {
+async function open(provider, path, sessionId, tools = lookup) {
   const store = database(path)
   const events = []
   const started = performance.now()
@@ -219,12 +233,10 @@ async function open(provider, path, sessionId) {
         return provider === 'claude' ? claude(body) : codex(body)
       },
       tools: {
-        call: async (name, input) => {
-          toolCalls.push({ provider, name, input })
-          if (name !== LOOKUP.name || input?.key !== 'alpha')
-            throw new Error(`unexpected tool call ${name}`)
-          return { key: 'alpha', value: 'bravo' }
-        },
+        call: (name, input, _signal, context) => tools.call(provider, name, input, context),
+        ...(tools.recover
+          ? { recover: (name, _signal, context) => tools.recover(provider, name, context) }
+          : {}),
       },
     },
   )
@@ -237,8 +249,7 @@ async function open(provider, path, sessionId) {
   }
 }
 
-async function turn(session, requestId) {
-  const started = performance.now()
+async function submit(session, requestId) {
   const submitted = await session.runtime.submit(SCOPE, {
     request_id: requestId,
     prompt: `Look up alpha for ${requestId}`,
@@ -246,6 +257,11 @@ async function turn(session, requestId) {
   })
   if (submitted.submitted !== 'accepted')
     throw new Error(`turn ${requestId} was ${submitted.submitted}`)
+}
+
+async function turn(session, requestId, expected = 'the value is bravo', submitted = false) {
+  const started = performance.now()
+  if (!submitted) await submit(session, requestId)
   let finished
   for (;;) {
     const next = (await session.runtime.pending(SCOPE))[0]
@@ -257,7 +273,7 @@ async function turn(session, requestId) {
   }
   while (!(await session.runtime.settle())) await new Promise((resolve) => setTimeout(resolve, 10))
   const report = finished?.report ?? (await session.runtime.turn(SCOPE, requestId))?.report
-  if (report?.status !== 'completed' || !JSON.stringify(report).includes('the value is bravo'))
+  if (report?.status !== 'completed' || !JSON.stringify(report).includes(expected))
     throw new Error(`turn ${requestId} did not complete: ${JSON.stringify(report)}`)
   return performance.now() - started
 }
@@ -318,10 +334,79 @@ async function scenario(provider) {
   }
 }
 
+const RECOVERED = {
+  error: async () => {
+    throw new Error('the recovery source is unavailable')
+  },
+  null: async () => null,
+  result: async () => ({ key: 'alpha', value: 'bravo' }),
+}
+
+async function recovery(provider, outcome) {
+  const path = `output/node-${provider}-recovery.sqlite`
+  rmSync(path, { force: true })
+  const sessionId = Contracts.sessionUuid()
+  let started
+  const admitted = new Promise((resolve) => (started = resolve))
+  const first = await open(provider, path, sessionId, {
+    call: (provider, name, input, context) => {
+      toolCalls.push({ provider, name, input, context })
+      started(context)
+      return new Promise(() => {})
+    },
+    recover: async () => {
+      throw new Error('the first instance recovered a call')
+    },
+  })
+  await submit(first, 'turn-1')
+  void first.runtime.drive('turn-1')
+  const interrupted = await admitted
+  const calledBefore = toolCalls.length
+  const restored = await open(provider, path, sessionId, {
+    call: async (provider, name) => {
+      throw new Error(`${provider} reran the interrupted ${name} call`)
+    },
+    recover: async (provider, name, context) => {
+      recoveries.push({ provider, name, context })
+      return RECOVERED[outcome]()
+    },
+  })
+  const restoredTurn = await turn(
+    restored,
+    'turn-1',
+    outcome === 'result' ? 'the value is bravo' : INTERRUPTED,
+    true,
+  )
+  const recovery = recoveries.filter((entry) => entry.provider === provider).at(-1)
+  if (
+    recovery?.name !== LOOKUP.name ||
+    recovery.context.call_id !== interrupted.call_id ||
+    recovery.context.session_id !== interrupted.session_id
+  )
+    throw new Error(`${provider} recovered ${JSON.stringify(recovery)} for ${interrupted.call_id}`)
+  if (toolCalls.length !== calledBefore) throw new Error(`${provider} reran the interrupted call`)
+  await restored.runtime.dispose()
+  restored.store.db.close()
+  return {
+    provider,
+    outcome,
+    call_id: interrupted.call_id,
+    restored_turn_ms: restoredTurn,
+  }
+}
+
 const report = {
   node: process.version,
   measured_at: new Date().toISOString(),
   scenarios: [await scenario('claude'), await scenario('codex')],
+  recoveries: [
+    await recovery('claude', 'result'),
+    await recovery('claude', 'null'),
+    await recovery('claude', 'error'),
+    await recovery('codex', 'result'),
+    await recovery('codex', 'null'),
+    await recovery('codex', 'error'),
+  ],
 }
 const path = `output/node-host-${Date.now()}.json`
 writeFileSync(path, JSON.stringify(report, null, 2))

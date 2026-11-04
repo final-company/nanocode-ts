@@ -524,6 +524,13 @@ async function create(
             )) ?? null
           )
         }
+        case 'tool_recover': {
+          const recover = state.options.tools?.recover
+          if (!recover) return null
+          const controller = new AbortController()
+          internal.onCancel(id, () => controller.abort())
+          return (await recover(request.name, controller.signal, request.context)) ?? null
+        }
         case 'file_read':
           return await internal.workspace().read(request.path)
         case 'file_exists':

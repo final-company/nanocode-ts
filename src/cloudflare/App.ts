@@ -105,6 +105,8 @@ export type HostToolCall = {
   grant?: unknown
 }
 
+export type HostToolRecovery = Omit<HostToolCall, 'input'>
+
 const workspaceMemoryBytes = 48 * 1024 * 1024
 
 const workspaceFileBytes = 32 * 1024 * 1024
@@ -337,6 +339,7 @@ export function create<E extends Env>(options: create.Options<E>): create.Return
       recoveries: 0,
       runtime_retirements: 0,
       host_tool_calls: 0,
+      host_tool_recoveries: 0,
     }
 
     constructor(ctx: DurableObjectState, env: E) {
@@ -1332,6 +1335,29 @@ export function create<E extends Env>(options: create.Options<E>): create.Return
                       signal,
                     )
                   },
+                  ...(options.tools.recover
+                    ? {
+                        recover: async (name, signal, context) => {
+                          if (this.dispatchBlocked(scope))
+                            throw new Error('request authority stopped')
+                          this.counts.host_tool_recoveries++
+                          return options.tools!.recover!(
+                            {
+                              authority: {
+                                account_id: authority.account_id,
+                                session_id: authority.session_id,
+                                session_name: authority.session_name,
+                              },
+                              name,
+                              context,
+                              grant: this.turnGrant(scope, descriptor),
+                            },
+                            this.env,
+                            signal,
+                          )
+                        },
+                      }
+                    : {}),
                 },
                 remote: {
                   failed: () => remoteFailed || remote?.failure !== undefined,
@@ -2938,6 +2964,7 @@ export declare namespace create {
     tools?: {
       definitions: Contracts.HostTool[]
       call(call: HostToolCall, env: E, signal: AbortSignal): Promise<unknown>
+      recover?(recovery: HostToolRecovery, env: E, signal: AbortSignal): Promise<unknown>
     }
     valueLimit?: number
     workspace?:

@@ -1,9 +1,12 @@
 use std::sync::Arc;
 
-use nanocode::{FunctionHandler, FunctionTool, tool_contract::ToolContext};
+use nanocode::{
+    FunctionHandler, FunctionTool, ToolRecovery,
+    tool_contract::{Tool, ToolContext, ToolInput, ToolOutput},
+};
 use nanocode_code_mode::embedded::HostFuture;
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{Value, json, value::to_raw_value};
 
 use super::bridge::call;
 
@@ -18,6 +21,24 @@ pub struct HostTool {
 
 struct Bridge;
 
+struct Recovered;
+
+struct Recovery {
+    content: Box<[String]>,
+}
+
+async fn described(context: &ToolContext<'_>) -> Value {
+    json!({
+        "session_id": context.session_id(),
+        "call_id": context.call_id(),
+        "turn_id": context.turn_id(),
+        "model": context.model(),
+        "instruction_revision": context.instruction_revision(),
+        "origin": context.host_context(),
+        "subagent": super::subagent(context.session_id()).await,
+    })
+}
+
 impl FunctionHandler for Bridge {
     fn call<'a>(
         &'a self,
@@ -26,15 +47,7 @@ impl FunctionHandler for Bridge {
         context: ToolContext<'a>,
     ) -> HostFuture<'a, Result<Value, String>> {
         Box::pin(async move {
-            let context = json!({
-                "session_id": context.session_id(),
-                "call_id": context.call_id(),
-                "turn_id": context.turn_id(),
-                "model": context.model(),
-                "instruction_revision": context.instruction_revision(),
-                "origin": context.host_context(),
-                "subagent": super::subagent(context.session_id()).await,
-            });
+            let context = described(&context).await;
             call(json!({"op": "tool_call", "name": name, "input": input, "context": context}))
                 .await
                 .map_err(|error| {
@@ -47,10 +60,55 @@ impl FunctionHandler for Bridge {
     }
 }
 
+impl FunctionHandler for Recovered {
+    fn call<'a>(
+        &'a self,
+        _name: &'a str,
+        input: Value,
+        _context: ToolContext<'a>,
+    ) -> HostFuture<'a, Result<Value, String>> {
+        Box::pin(async move { Ok(input) })
+    }
+}
+
+impl ToolRecovery for Recovery {
+    fn recover<'a>(
+        &'a self,
+        name: &'a str,
+        context: ToolContext<'a>,
+    ) -> HostFuture<'a, Option<ToolOutput>> {
+        Box::pin(async move {
+            let described = described(&context).await;
+            let result =
+                match call(json!({"op": "tool_recover", "name": name, "context": described})).await
+                {
+                    Ok(Value::Null) | Err(_) => return None,
+                    Ok(result) => to_raw_value(&result).ok()?,
+                };
+            let content = self.content.iter().any(|tool| tool == name);
+            FunctionTool::new(name, "", json!({}), Arc::new(Recovered))
+                .content_results(content)
+                .execute(ToolInput::Function(result), context)
+                .await
+                .ok()
+        })
+    }
+}
+
 impl HostTool {
     pub fn name(&self) -> &str {
         &self.name
     }
+}
+
+pub fn recovery(definitions: &[HostTool]) -> Arc<dyn ToolRecovery> {
+    Arc::new(Recovery {
+        content: definitions
+            .iter()
+            .filter(|tool| tool.content)
+            .map(|tool| tool.name.clone())
+            .collect(),
+    })
 }
 
 pub fn tools(definitions: Vec<HostTool>) -> impl Iterator<Item = FunctionTool> {
