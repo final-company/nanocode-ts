@@ -962,17 +962,11 @@ async fn open(mut config: Configuration) -> Result<Session, Opening> {
             .chain(image(family))
             .try_fold(base, |tools, tool| tools.add_shared_tool(tool))
             .map_err(configuration)?;
-        let tools = tools
-            .into_builder()
-            .without_defaults()
-            .tool_recovery(recovery.clone())
-            .build()
-            .map_err(configuration)?;
+        let tools = tools.into_builder().tool_recovery(recovery.clone());
         if !(placement || local) {
-            return Ok(tools);
+            return tools.build().map_err(configuration);
         }
         tools
-            .into_builder()
             .without_defaults()
             .code_mode_host(executors.clone())
             .build()

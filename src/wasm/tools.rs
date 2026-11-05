@@ -74,12 +74,12 @@ async fn context_value(context: ToolContext<'_>) -> Value {
     })
 }
 
-pub struct Recovery {
+pub(crate) struct Recovery {
     tools: Vec<(String, bool)>,
 }
 
 impl Recovery {
-    pub fn new(tools: &[HostTool]) -> Self {
+    pub(crate) fn new(tools: &[HostTool]) -> Self {
         Self {
             tools: tools
                 .iter()
@@ -87,13 +87,6 @@ impl Recovery {
                 .collect(),
         }
     }
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum Recovered {
-    Result { result: Value },
-    Error { error: String },
 }
 
 struct RecoveredResult(Value);
@@ -117,22 +110,38 @@ impl ToolRecovery for Recovery {
     ) -> HostFuture<'a, Option<ToolOutput>> {
         Box::pin(async move {
             let (_, content) = self.tools.iter().find(|(candidate, _)| candidate == name)?;
-            let reply = call(json!({"op": "tool_recover", "name": name, "context": context_value(context).await})).await.ok()?;
-            match serde_json::from_value(reply).ok()? {
-                Recovered::Error { error } => Some(ToolOutput::error(error)),
-                Recovered::Result { result } => {
-                    let formatter =
-                        FunctionTool::new(name, "", Value::Null, Arc::new(RecoveredResult(result)))
-                            .content_results(*content);
-                    formatter
-                        .execute(
-                            ToolInput::Function(RawValue::from_string("null".into()).ok()?),
-                            context,
-                        )
-                        .await
-                        .ok()
+            let reply = match call(json!({"op": "tool_recover", "name": name, "context": context_value(context).await})).await {
+                Ok(reply) => reply,
+                Err(error) => {
+                    let detail = error.get("detail").and_then(Value::as_str).unwrap_or("the host callback failed");
+                    return Some(ToolOutput::error(format!("Host tool recovery failed: {detail}. The operation's outcome is unknown; do not automatically repeat it.")));
                 }
+            };
+            if reply.is_null() {
+                return None;
             }
+            if let Some(error) = reply.get("error").and_then(Value::as_str) {
+                return Some(ToolOutput::error(error));
+            }
+            let Some(result) = reply.get("result") else {
+                return Some(ToolOutput::error(
+                    "The host returned an invalid tool recovery response. The operation's outcome is unknown; do not automatically repeat it.",
+                ));
+            };
+            let formatter = FunctionTool::new(
+                name,
+                "",
+                Value::Null,
+                Arc::new(RecoveredResult(result.clone())),
+            )
+            .content_results(*content);
+            formatter
+                .execute(
+                    ToolInput::Function(RawValue::from_string("null".into()).ok()?),
+                    context,
+                )
+                .await
+                .ok()
         })
     }
 }

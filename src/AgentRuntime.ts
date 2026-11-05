@@ -529,7 +529,14 @@ async function create(
           if (!recover) return null
           const controller = new AbortController()
           internal.onCancel(id, () => controller.abort())
-          return await recover(request.name, controller.signal, request.context)
+          const recovered = (await recover(request.name, controller.signal, request.context)) ?? null
+          if (recovered === null) return null
+          if (typeof recovered === 'object' && !Array.isArray(recovered)) {
+            if ('result' in recovered) return { result: recovered.result ?? null }
+            if ('error' in recovered && typeof recovered.error === 'string')
+              return { error: recovered.error }
+          }
+          throw new TypeError('host tool recovery must return null, {result}, or {error}')
         }
         case 'file_read':
           return await internal.workspace().read(request.path)
