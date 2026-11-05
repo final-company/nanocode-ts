@@ -110,11 +110,17 @@ impl ToolRecovery for Recovery {
     ) -> HostFuture<'a, Option<ToolOutput>> {
         Box::pin(async move {
             let (_, content) = self.tools.iter().find(|(candidate, _)| candidate == name)?;
-            let reply = match call(json!({"op": "tool_recover", "name": name, "context": context_value(context).await})).await {
+            let request = json!({"op": "tool_recover", "name": name, "context": context_value(context).await});
+            let reply = match call(request).await {
                 Ok(reply) => reply,
                 Err(error) => {
-                    let detail = error.get("detail").and_then(Value::as_str).unwrap_or("the host callback failed");
-                    return Some(ToolOutput::error(format!("Host tool recovery failed: {detail}. The operation's outcome is unknown; do not automatically repeat it.")));
+                    let detail = error
+                        .get("detail")
+                        .and_then(Value::as_str)
+                        .unwrap_or("the host callback failed");
+                    return Some(ToolOutput::error(format!(
+                        "Host tool recovery failed: {detail}. The operation's outcome is unknown; do not automatically repeat it."
+                    )));
                 }
             };
             if reply.is_null() {
