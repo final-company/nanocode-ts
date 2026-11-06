@@ -407,6 +407,11 @@ export type RuntimeOptions = {
       signal: AbortSignal,
       context: ToolCallContext,
     ): Promise<unknown>
+    recover?(
+      name: string,
+      signal: AbortSignal,
+      context: ToolCallContext,
+    ): Promise<{ result: unknown } | { error: string } | null>
   }
   workspace?: WorkspaceHost
   fetch?(input: string, init: RequestInit, subagent: Subagent | null): Promise<Response>
