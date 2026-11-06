@@ -998,6 +998,7 @@ async fn open(mut config: Configuration) -> Result<Session, Opening> {
         .tools
         .iter()
         .any(|tool| tool.name() == "image_gen__imagegen");
+    let recovery = Arc::new(tools::Recovery::new(&config.tools));
     shared.extend(tools::tools(config.tools));
     let search = |family: Provider| -> Option<Arc<dyn Tool>> {
         let replaced = match family {
@@ -1086,11 +1087,11 @@ async fn open(mut config: Configuration) -> Result<Session, Opening> {
                     .chain(image(family)),
             )
             .map_err(configuration)?;
+        let tools = tools.into_builder().tool_recovery(recovery.clone());
         if !(placement || local) {
-            return Ok(tools);
+            return tools.build().map_err(configuration);
         }
         tools
-            .into_builder()
             .without_defaults()
             .code_mode_host(executors.clone())
             .build()
