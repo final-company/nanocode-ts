@@ -1477,6 +1477,7 @@ async fn open(mut config: Configuration) -> Result<Session, Opening> {
         .tools
         .iter()
         .any(|tool| tool.name() == "image_gen__imagegen");
+    let recovery = Arc::new(tools::Recovery::new(&config.tools));
     shared.extend(tools::tools(config.tools));
     let search = |family: Provider| -> Option<Arc<dyn Tool>> {
         let replaced = match family {
@@ -1568,7 +1569,11 @@ async fn open(mut config: Configuration) -> Result<Session, Opening> {
             )
             .map_err(configuration)?;
         if !(placement || local) {
-            return Ok(tools);
+            return tools
+                .into_builder()
+                .tool_recovery(recovery.clone())
+                .build()
+                .map_err(configuration);
         }
         let aliases = ["exec_command", "write_stdin", "apply_patch"]
             .into_iter()
@@ -1580,6 +1585,7 @@ async fn open(mut config: Configuration) -> Result<Session, Opening> {
             .collect::<Vec<_>>();
         let builder = tools
             .into_builder()
+            .tool_recovery(recovery.clone())
             .without_defaults()
             .code_mode_host(executors.clone());
         match local && !config.hands {
