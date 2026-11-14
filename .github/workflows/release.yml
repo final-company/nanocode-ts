@@ -1,0 +1,83 @@
+name: Release
+
+# Upstream releases by hand with scripts/release.mjs; the fork runs that script on every push to final.
+on:
+  push:
+    branches: [final]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.sha }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: nanocode-ts
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Read SDK revision
+        id: sdk
+        run: |
+          echo "repository=$(jq -r .repository nanocode-ts/sdk-revision.json | sed 's|^https://github.com/||')" >> "$GITHUB_OUTPUT"
+          echo "revision=$(jq -r .revision nanocode-ts/sdk-revision.json)" >> "$GITHUB_OUTPUT"
+
+      # scripts/build.mjs reads the SDK from ../nanocodex and fetches the psh and Python pins into it.
+      - name: Checkout SDK
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.sdk.outputs.repository }}
+          ref: ${{ steps.sdk.outputs.revision }}
+          path: nanocodex
+          persist-credentials: false
+
+      - name: Setup Rust
+        id: rust
+        working-directory: nanocode-ts
+        run: echo "version=$(rustc --version | cut -d ' ' -f 2)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Cargo
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-${{ runner.os }}-${{ hashFiles('nanocode-ts/Cargo.lock', 'nanocode-ts/sdk-revision.json') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Cache WASM Build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            nanocode-ts/target
+            nanocode-ts/output/wasm-build-fingerprint
+          key: wasm-${{ runner.os }}-${{ steps.rust.outputs.version }}-${{ steps.sdk.outputs.revision }}-${{ hashFiles('nanocode-ts/Cargo.lock', 'nanocode-ts/src/**/*.rs', 'nanocode-ts/*-revision.json') }}
+          restore-keys: wasm-${{ runner.os }}-${{ steps.rust.outputs.version }}-
+
+      - name: Install libclang
+        run: |
+          if ls /usr/lib/llvm-*/lib/libclang.so* >/dev/null 2>&1; then
+            echo "LIBCLANG_PATH=$(dirname "$(ls /usr/lib/llvm-*/lib/libclang.so* | sort -V | tail -n 1)")" >> "$GITHUB_ENV"
+          else
+            sudo apt-get update && sudo apt-get install -y --no-install-recommends libclang-dev
+          fi
+
+      - name: Release
+        working-directory: nanocode-ts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release.mjs

@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 export const root = fileURLToPath(new URL("..", import.meta.url));
 export const outputs = ["nanocode_wasm.wasm", "interpreter.wasm", "psh.wasm", "python.wasm", "models.js", "models.d.ts"];
 export const manifestName = "nanocode-wasm.json";
-export const repository = "nanocodexyz/nanocode-ts";
+export const repository = "final-company/nanocode-ts";
 
 function sources() {
   const files = ["sdk-revision.json", "psh-revision.json", "python-revision.json", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "scripts/build.mjs", "scripts/psh.mjs", "scripts/wasm.mjs", "src/wasm/prelude.js", "interpreter/Cargo.toml", "interpreter/Cargo.lock", "python/Cargo.toml", "python/Cargo.lock", "scripts/python.mjs"];
