@@ -16,10 +16,12 @@ if (spawnSync('git', ['diff', '--quiet', 'HEAD'], { cwd: root }).status !== 0) {
   console.error('the checkout has uncommitted changes: commit and push them, then release')
   process.exit(1)
 }
-run(['git', 'fetch', 'origin', 'master'])
+// The final-company fork releases from final (RELEASE_BRANCH in .github/workflows/release.yml).
+const branch = process.env.RELEASE_BRANCH ?? 'master'
+run(['git', 'fetch', 'origin', branch])
 const sha = read(['git', 'rev-parse', 'HEAD'])
-if (sha !== read(['git', 'rev-parse', 'origin/master'])) {
-  console.error('release the current pushed master commit')
+if (sha !== read(['git', 'rev-parse', 'FETCH_HEAD'])) {
+  console.error('release the current pushed ' + branch + ' commit')
   process.exit(1)
 }
 const short = sha.slice(0, 7)
