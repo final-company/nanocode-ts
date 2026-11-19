@@ -106,6 +106,7 @@ struct FinishLevers {
     finish_check_min_requests: Option<std::num::NonZeroU32>,
     finish_retries: Option<std::num::NonZeroU32>,
     fold_finish: bool,
+    tool_repair: bool,
     lean_cells: bool,
     late_finish_check: Option<Duration>,
     low_effort_rounds: bool,
@@ -272,6 +273,8 @@ struct Configuration {
     fold_finish: bool,
     #[serde(default)]
     lean_cells: bool,
+    #[serde(default)]
+    tool_repair: bool,
     #[serde(default)]
     low_effort_rounds: bool,
     #[serde(default)]
@@ -1116,6 +1119,7 @@ fn claude_harness(
             .finish_check(levers.finish_check)
             .fold_finish(levers.fold_finish)
             .lean_cells(levers.lean_cells)
+            .tool_repair(levers.tool_repair)
             .low_effort_rounds(levers.low_effort_rounds)
             .persist_finish(levers.persist_finish)
             .persistence_nudge(levers.persistence_nudge)
@@ -1345,6 +1349,7 @@ async fn open(mut config: Configuration) -> Result<Session, Opening> {
                 finish_retries: config.finish_retries,
                 fold_finish: config.fold_finish,
                 lean_cells: config.lean_cells,
+                tool_repair: config.tool_repair,
                 late_finish_check: config
                     .late_finish_check_ms
                     .map(|ms| Duration::from_millis(ms.get())),

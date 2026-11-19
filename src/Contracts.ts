@@ -130,6 +130,7 @@ export type AgentConfiguration = {
   finish_retries?: number
   late_finish_check_ms?: number
   lean_cells?: boolean
+  tool_repair?: boolean
   low_effort_rounds?: boolean
   persist_finish?: boolean
   omit_media_on_empty_cut?: boolean
