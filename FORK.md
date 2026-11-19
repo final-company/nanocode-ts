@@ -20,13 +20,22 @@ sessions pass `code_mode: false`, so `final` now follows upstream. The old branc
   `src/AgentRuntime.ts` and `src/Contracts.ts` carry the callback. The SDK sets no timeout on it;
   the host bounds its own wait. `DECISIONS.md` describes it. Final uses it to re-attach exec calls
   across a Durable Object reset, to recover MCP calls, and to ask an interrupted approval again.
+- `patches/nanocode/` holds SDK changes this fork applies to the checkout of `sdk-revision.json`
+  until upstream takes them. `0001-claude-shutdown-leaves-calls-to-tool-recovery.patch`
+  ([nanocodexyz/nanocode#1250](https://github.com/nanocodexyz/nanocode/pull/1250)): since nanocode
+  9708674f4 made `Runtime::shutdown` durable, a Claude host tool call stopped by a graceful shutdown
+  kept an `outcome unknown` receipt and never reached `tools.recover`; with a `ToolRecovery`
+  installed, the call now stays admitted for the next runtime. The release workflow applies every
+  patch, and `scripts/wasm.mjs` fingerprints them. Before a local `node scripts/build.mjs`, apply
+  them in `../nanocodex` with `git apply ../nanocode-ts/patches/nanocode/*.patch`.
 - `scripts/wasm.mjs` publishes and downloads WASM builds from this repository, and
   `.github/workflows/release.yml` runs `scripts/release.mjs` on every push to `final` (upstream
   releases by hand).
 
-The Rust SDK is not patched: the bridge only uses its public `ToolRecovery` hook and the
-`tool_recovery` tool-set builder. If an upstream SDK change removes either, or upstream makes Code
-Mode mandatory again, the fork no longer works by rebasing alone; stop and decide what to do.
+Apart from `patches/nanocode/`, the Rust SDK is not patched: the bridge only uses its public
+`ToolRecovery` hook and the `tool_recovery` tool-set builder. If an upstream SDK change removes
+either, or upstream makes Code Mode mandatory again, the fork no longer works by rebasing alone;
+stop and decide what to do.
 
 ## Syncing with upstream
 
@@ -42,6 +51,10 @@ Conflicts are in the commits above: keep the `tools.recover` bridge and the rele
 take upstream's change otherwise. Read `DECISIONS.md` for what came in, especially entries that say
 "Breaks": the SDK migrates session storage forward only, and some changes (the `OneLog` turn log of
 2026-11-12) leave sessions stored before them empty.
+
+Check that every patch in `patches/nanocode/` still applies to the new `sdk-revision.json`
+(`git -C ../nanocodex apply --check ../nanocode-ts/patches/nanocode/*.patch`). Delete a patch
+once the pinned SDK includes its upstream change; re-export one that no longer applies.
 
 Then run `npm ci --ignore-scripts`, `npm run check:types`, and push with `--force-with-lease`. The
 release workflow publishes `build-<short sha>` with `nanocode-ts-<short sha>.tgz`, building the WASM

@@ -19,6 +19,8 @@ export function fetchCrates(cwd) {
 
 function sources() {
   const files = ["sdk-revision.json", "psh-revision.json", "python-revision.json", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "scripts/build.mjs", "scripts/psh.mjs", "scripts/wasm.mjs", "src/wasm/prelude.js", "interpreter/Cargo.toml", "interpreter/Cargo.lock", "python/Cargo.toml", "python/Cargo.lock", "scripts/python.mjs"];
+  // The SDK patches this fork applies to the checkout of sdk-revision.json (FORK.md).
+  if (existsSync(join(root, "patches"))) for (const file of readdirSync(join(root, "patches"), { recursive: true })) if (String(file).endsWith(".patch")) files.push("patches/" + String(file).split("\\").join("/"));
   for (const directory of ["src", "interpreter/src", "python/src"]) {
     for (const file of readdirSync(join(root, directory), { recursive: true })) {
       const path = directory + "/" + String(file).split("\\").join("/");

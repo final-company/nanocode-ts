@@ -1,0 +1,184 @@
+From a7b9b81ef68e117c767b531262f47755d8230cc3 Mon Sep 17 00:00:00 2001
+From: Ryan Lucia <ryan@luciaonline.net>
+Date: Thu, 19 Nov 2026 13:03:17 -0800
+Subject: [PATCH] fix(claude): leave a call a closing session stops to the
+ host's ToolRecovery
+
+Since 9708674f4 made Runtime::shutdown durable, the outcome-unknown
+receipt durable_tool writes for a call stopped at shutdown is committed,
+so the next runtime replays it and never reaches the host's ToolRecovery.
+When the tool runtime has a ToolRecovery, a call stopped while the
+session closes now returns TurnCancelled instead of a receipt, so settle
+releases the operation and the call stays admitted for recovery. Hosts
+without a ToolRecovery are unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ crates/backends/claude/src/agent.rs             |  3 +++
+ crates/backends/claude/src/agent/assemble.rs    |  5 +++++
+ crates/backends/claude/src/agent/durable.rs     | 17 ++++++++++++++++-
+ crates/backends/claude/src/claude_tools.rs      |  1 +
+ .../runtime/tool-host/src/embedded/runtime.rs   |  6 ++++++
+ .../runtime/tool-host/src/runtime/execution.rs  |  6 ++++++
+ 6 files changed, 37 insertions(+), 1 deletion(-)
+
+diff --git a/crates/backends/claude/src/agent.rs b/crates/backends/claude/src/agent.rs
+index db3781409..d62b9a74c 100644
+--- a/crates/backends/claude/src/agent.rs
++++ b/crates/backends/claude/src/agent.rs
+@@ -361,6 +361,7 @@ pub struct ClaudeTools {
+     pub(crate) code_quiet: Vec<CodeQuiet>,
+     pub(crate) nested_tools: Option<NestedToolLookup>,
+     pub(crate) recovery: Option<ToolRecovery>,
++    pub(crate) recovers_tools: bool,
+     pub(crate) shared_catalog: Option<(nanocode_tool_host::Tools, std::path::PathBuf, AgentHandle)>,
+     pub(crate) shared_tool_names: HashSet<String>,
+     pub(crate) shared_shutdown: Option<ToolCleanup>,
+@@ -407,6 +408,7 @@ impl nanocode_tools::ToolCollection for ClaudeTools {
+             self.code_quiet = replacement.code_quiet;
+             self.nested_tools = replacement.nested_tools;
+             self.recovery = replacement.recovery;
++            self.recovers_tools = replacement.recovers_tools;
+             self.shared_catalog = replacement.shared_catalog;
+             return Ok(self);
+         }
+@@ -3612,6 +3614,7 @@ struct State {
+     code_only: bool,
+     nested_tools: Option<NestedToolLookup>,
+     recovery: Option<ToolRecovery>,
++    recovers_tools: bool,
+     parallel_tools: bool,
+ 
+     parallel_safe_tools: HashSet<String>,
+diff --git a/crates/backends/claude/src/agent/assemble.rs b/crates/backends/claude/src/agent/assemble.rs
+index 6179839ab..dbd5b5317 100644
+--- a/crates/backends/claude/src/agent/assemble.rs
++++ b/crates/backends/claude/src/agent/assemble.rs
+@@ -65,10 +65,12 @@ pub(super) fn build(mut builder: ClaudeBuilder) -> Result<(Agent, AgentEvents)>
+     let mut working_directory = None;
+     let mut nested_tools = None;
+     let mut recovery = None;
++    let mut recovers_tools = false;
+     if let Some(factory) = &builder.tools_factory {
+         let native = factory(handle.clone())?;
+         nested_tools = native.nested_tools;
+         recovery = native.recovery;
++        recovers_tools = native.recovers_tools;
+         custom_tool_search = native.custom_tool_search;
+         builder.client_tool_search |= custom_tool_search;
+         builder.tools.extend(native.tools);
+@@ -295,6 +297,7 @@ pub(super) fn build(mut builder: ClaudeBuilder) -> Result<(Agent, AgentEvents)>
+             code_quiet: Vec::new(),
+             nested_tools: nested_tools.clone(),
+             recovery: recovery.clone(),
++            recovers_tools,
+             shared_catalog: None,
+             shared_tool_names: HashSet::new(),
+             shared_shutdown: None,
+@@ -306,6 +309,7 @@ pub(super) fn build(mut builder: ClaudeBuilder) -> Result<(Agent, AgentEvents)>
+         let adapted = adapter(catalog)?;
+         nested_tools = adapted.nested_tools;
+         recovery = adapted.recovery;
++        recovers_tools = adapted.recovers_tools;
+         for (mut definition, handler) in adapted.tools {
+             crate::instructions::upstream_tool(
+                 &builder.claude.model,
+@@ -583,6 +587,7 @@ pub(super) fn build(mut builder: ClaudeBuilder) -> Result<(Agent, AgentEvents)>
+         working_directory: working_directory.map(crate::environment::WorkingDirectory::new),
+         nested_tools,
+         recovery,
++        recovers_tools,
+         dynamic_tools: builder.dynamic_tools,
+         tool_hooks: builder.tool_hooks,
+         server_tools: builder.server_tools,
+diff --git a/crates/backends/claude/src/agent/durable.rs b/crates/backends/claude/src/agent/durable.rs
+index a018563d5..4a0ab1357 100644
+--- a/crates/backends/claude/src/agent/durable.rs
++++ b/crates/backends/claude/src/agent/durable.rs
+@@ -826,6 +826,13 @@ impl State {
+         self.persistence_ready.notify_waiters();
+         settled
+     }
++    /// A call that a closing session stops stays admitted, without a receipt, when the
++    /// host answers interrupted calls (a `ToolRecovery` on its tools): its work may
++    /// outlive this runtime, and the next one recovers the call through the host.
++    fn leaves_for_recovery(&self) -> bool {
++        self.recovers_tools && self.life.closing()
++    }
++
+     pub(super) async fn durable_tool(
+         &self,
+         control: (&Cursor, &Cancellation),
+@@ -931,6 +938,9 @@ impl State {
+         } else if interrupted {
+             ContentBlock::tool_result_content(id, ToolResultContent::Text("Tool execution interrupted by a host crash; outcome unknown. Do not assume it did not run or automatically repeat it.".into()), true)
+         } else if cancel.is_cancelled() {
++            if self.leaves_for_recovery() {
++                return Err(NanocodeError::TurnCancelled);
++            }
+             unknown()
+         } else if handler.is_some()
+             && let Some(unparsed) = input
+@@ -982,7 +992,12 @@ impl State {
+         } else if let Some(handler) = handler {
+             nanocode_sync::select! {
+                 result = self.call_tool(id, name, called, handler, events, (cursor, cancel, None)) => result?,
+-                () = cancel.cancelled() => unknown(),
++                () = cancel.cancelled() => {
++                    if self.leaves_for_recovery() {
++                        return Err(NanocodeError::TurnCancelled);
++                    }
++                    unknown()
++                }
+             }
+         } else if self.code_only
+             && name != "exec"
+diff --git a/crates/backends/claude/src/claude_tools.rs b/crates/backends/claude/src/claude_tools.rs
+index 8eccad83e..08101f020 100644
+--- a/crates/backends/claude/src/claude_tools.rs
++++ b/crates/backends/claude/src/claude_tools.rs
+@@ -144,6 +144,7 @@ pub(super) fn install(
+     }
+     let nested = Arc::clone(&runtime);
+     native.nested_tools = Some(Arc::new(move |name| nested.contains(name)));
++    native.recovers_tools = runtime.recovers_tools();
+     let recovery = Arc::clone(&runtime);
+     native.recovery = Some(Arc::new(move |name, invocation| {
+         let runtime = Arc::clone(&recovery);
+diff --git a/crates/runtime/tool-host/src/embedded/runtime.rs b/crates/runtime/tool-host/src/embedded/runtime.rs
+index e174eb28a..072efc4e3 100644
+--- a/crates/runtime/tool-host/src/embedded/runtime.rs
++++ b/crates/runtime/tool-host/src/embedded/runtime.rs
+@@ -650,6 +650,12 @@ impl EmbeddedToolRuntime {
+             .collect()
+     }
+ 
++    /// Whether the host answers interrupted tool calls (a `ToolRecovery`).
++    #[must_use]
++    pub fn recovers_tools(&self) -> bool {
++        self.recovery.is_some()
++    }
++
+     pub async fn recover_tool(&self, name: &str, context: ToolContext<'_>) -> Option<ToolOutput> {
+         self.recovery
+             .as_ref()?
+diff --git a/crates/runtime/tool-host/src/runtime/execution.rs b/crates/runtime/tool-host/src/runtime/execution.rs
+index 5f89a4cf6..232abcd71 100644
+--- a/crates/runtime/tool-host/src/runtime/execution.rs
++++ b/crates/runtime/tool-host/src/runtime/execution.rs
+@@ -345,6 +345,12 @@ impl ToolRuntime {
+         })
+     }
+ 
++    /// Whether the host answers interrupted native tool calls (a `ToolRecovery`).
++    #[must_use]
++    pub fn recovers_tools(&self) -> bool {
++        matches!(self.inner, Runtime::Native(_)) && self.recovery.is_some()
++    }
++
+     pub fn recover_tool<'call>(
+         &'call self,
+         name: &'call str,
+-- 
+2.54.0 (Apple Git-157)
+

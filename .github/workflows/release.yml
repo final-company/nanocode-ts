@@ -44,6 +44,13 @@ jobs:
           path: nanocodex
           persist-credentials: false
 
+      # FORK.md: the SDK changes this fork carries until upstream takes them.
+      - name: Apply SDK patches
+        run: |
+          for patch in nanocode-ts/patches/nanocode/*.patch; do
+            git -C nanocodex apply "$GITHUB_WORKSPACE/$patch"
+          done
+
       - name: Setup Rust
         id: rust
         working-directory: nanocode-ts
