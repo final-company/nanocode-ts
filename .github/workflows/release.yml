@@ -75,6 +75,15 @@ jobs:
           key: wasm-${{ runner.os }}-${{ steps.rust.outputs.version }}-${{ steps.sdk.outputs.revision }}-${{ hashFiles('nanocode-ts/Cargo.lock', 'nanocode-ts/src/**/*.rs', 'nanocode-ts/*-revision.json') }}
           restore-keys: wasm-${{ runner.os }}-${{ steps.rust.outputs.version }}-
 
+      # The SDK's python.wasm C API defines its own `__c_longjmp` tag; older clang also emits
+      # one under `-mllvm -wasm-enable-sjlj` and fails with "symbol already defined".
+      - name: Install clang 23
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc >/dev/null
+          echo "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-23 main" | sudo tee /etc/apt/sources.list.d/llvm-23.list
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends clang-23
+          echo "NANOCODE_CC=clang-23" >> "$GITHUB_ENV"
+
       - name: Install libclang
         run: |
           if ls /usr/lib/llvm-*/lib/libclang.so* >/dev/null 2>&1; then
